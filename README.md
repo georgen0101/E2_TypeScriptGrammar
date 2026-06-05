@@ -7,11 +7,12 @@
   * [2.1 Grammar Model 1 — Recognizes the Language](#grammar-model-1--recognizes-the-language-with-ambiguity-and-left-recursion)
   * [2.2 Grammar Model 2 — Ambiguity Eliminated](#grammar-model-2--ambiguity-eliminated)
   * [2.3 Grammar Model 3 — Left Recursion Eliminated](#grammar-model-3--left-recursion-eliminated-ll1-ready)
-* [3. Implementation + Testing](#implementation--testing)
-  * [3.1 Test Cases](#test-cases)
-* [4. Complexity](#complexity)
-* [5. Analysis](#analysis)
-* [6. References](#references)
+* [3. Comparison of Approaches and Justification](#comparison-of-approaches-and-justification)
+* [4. Implementation + Testing](#implementation--testing)
+  * [4.1 Test Cases](#test-cases)
+* [5. Complexity](#complexity)
+* [6. Analysis](#analysis)
+* [7. References](#references)
 
 ---
 
@@ -29,7 +30,7 @@ The language in focus is a subset of **TypeScript**, for which we build a gramma
 
 Note: All declarations must end with a semicolon.
 
-To implement this solution, we utilize an **LL(1) parser**, a top-down parsing technique commonly employed in computational linguistics. The term "LL" signifies "left-to-right, leftmost derivation," denoting the parser's approach of reading input from left to right and constructing parse trees top-down. The "(1)" indicates that the parser employs a single token of lookahead, streamlining the parsing process and eliminating the need for backtracking (Grune & Jacobs, 2008).
+To implement this solution, we utilize an **LL(1) parser**, a top-down parsing technique commonly employed in computational linguistics. The term "LL" signifies "left-to-right, leftmost derivation," denoting the parser's approach of reading input from left to right and constructing parse trees top-down. The "(1)" indicates that the parser employs a single token of lookahead, streamlining the parsing process and eliminating the need for backtracking [3].
 
 ---
 
@@ -73,14 +74,40 @@ Literal  ::= intlit
 
 This grammar correctly describes the language but presents two critical problems:
 
-- **Ambiguity**: `Expr ::= Expr '+' Expr | Expr '*' Expr` generates multiple parse trees for the same string (e.g., `5 + 3 * 2`) because there is no operator precedence enforced. According to Hopcroft et al. (2006), a grammar is ambiguous if some string has two or more different leftmost derivations.
+- **Ambiguity**: `Expr ::= Expr '+' Expr | Expr '*' Expr` generates multiple parse trees for the same string (e.g., `5 + 3 * 2`) because there is no operator precedence enforced. According to the standard definition, a grammar is ambiguous if some string has two or more distinct leftmost derivations [2].
 - **Left recursion**: `Program ::= Program Stmt` and `Expr ::= Expr '+' Expr` both begin with the non-terminal being defined, causing top-down parsers to loop infinitely.
+
+The next two sections walk through how each problem is removed, one transformation at a time.
 
 ---
 
 ### Grammar Model 2 — Ambiguity Eliminated
 
-To eliminate ambiguity, operator precedence is enforced by splitting `Expr` into hierarchical levels. Multiplication and division bind more tightly than addition and subtraction, and parentheses override all precedence (Aho et al., 2006).
+Model 1 is ambiguous because its four binary-operator productions for `Expr` all sit at the same level with no ordering between them, so the grammar encodes neither operator precedence nor associativity. The ambiguity is removed in three steps.
+
+**Step 1: Exhibit the ambiguity on a concrete string.** Take `5 + 3 * 2`. Under Model 1 this string has two different leftmost derivations, each expanding the leftmost non-terminal first:
+
+```
+Derivation A  (structure: (5 + 3) * 2)
+Expr => Expr * Expr
+     => Expr + Expr * Expr
+     => 5 + Expr * Expr
+     => 5 + 3 * Expr
+     => 5 + 3 * 2
+
+Derivation B  (structure: 5 + (3 * 2))
+Expr => Expr + Expr
+     => 5 + Expr
+     => 5 + Expr * Expr
+     => 5 + 3 * Expr
+     => 5 + 3 * 2
+```
+
+Both derivations produce the same string but different parse trees, and they even compute different values (16 versus 11). Since the same string has more than one leftmost derivation, the grammar is ambiguous by definition [2].
+
+**Step 2: Give each operator class its own precedence level.** The fix is to assign a separate non-terminal to each level of precedence, with the lowest-precedence operators highest in the hierarchy. Addition and subtraction become the level handled by `Expr`, multiplication and division become a tighter-binding level handled by a new non-terminal `Term`, and parentheses, literals, and identifiers become the innermost level handled by `Factor`.
+
+**Step 3: Restrict each level to reference only the level below it.** `Expr` may only combine `Term`s with `+` and `-`, `Term` may only combine `Factor`s with `*` and `/`, and `Factor` holds a parenthesized expression, a literal, or an identifier. Because a `*` can only be introduced inside a `Term`, and a `Term` is always a complete operand of `Expr`, any multiplication must be reduced before it can become an operand of an addition. This is what forces `*` and `/` to bind more tightly than `+` and `-`, and parentheses in `Factor` override the levels entirely [1]. The result is Model 2.
 
 ```
 Program  ::= Stmt
@@ -116,13 +143,50 @@ Literal  ::= intlit
            | 'false'
 ```
 
-Each string now has exactly one parse tree. However, left recursion persists in `Program`, `Expr`, and `Term`.
+With these levels in place, `5 + 3 * 2` now has a single parse tree: `3 * 2` is built as a `Term` and then used as the right operand of `+`, so the only possible structure is `5 + (3 * 2)`. To obtain the other grouping a writer must use explicit parentheses, as in `( 5 + 3 ) * 2`, which `Factor` handles directly. Each input now corresponds to exactly one derivation, so Model 2 is unambiguous. Left recursion, however, still persists in `Program`, `Expr`, and `Term`, and is addressed next.
 
 ---
 
 ### Grammar Model 3 – Left Recursion Eliminated (LL(1) Ready)
 
-Left recursion is eliminated by applying the standard algorithm described by Hopcroft et al. (2006): a production of the form `A ::= A α | β` is replaced with `A ::= β A'` and `A' ::= α A' | ''`, where `''` represents the empty string ε.
+A production has immediate left recursion when its body begins with the same non-terminal being defined, as in `A ::= A α`. A top-down LL parser that tries to expand `A` would call `A` again without consuming any input, so it never terminates [1]. Model 2 contains three such non-terminals: `Program`, `Expr`, and `Term`. Each is fixed with the standard transformation [1]: for a non-terminal whose productions are `A ::= A α1 | A α2 | ... | β1 | β2 | ...`, where no `βi` begins with `A`, the productions are rewritten as
+
+```
+A  ::= β1 A' | β2 A' | ...
+A' ::= α1 A' | α2 A' | ... | ''
+```
+
+where `A'` is a new non-terminal and `''` is the empty string ε. The rewritten grammar generates exactly the same language but is right-recursive, so a predictive parser terminates. The transformation is applied to each non-terminal in turn.
+
+**Step 1: `Program`.** The productions `Program ::= Program Stmt | Stmt` match the pattern with α = `Stmt` and β = `Stmt`, giving
+
+```
+Program  ::= Stmt ProgramR
+ProgramR ::= Stmt ProgramR | ''
+```
+
+**Step 2: `Expr`.** The productions `Expr ::= Expr '+' Term | Expr '-' Term | Term` have α1 = `'+' Term`, α2 = `'-' Term`, and β = `Term`, giving
+
+```
+Expr  ::= Term ExprR
+ExprR ::= '+' Term ExprR | '-' Term ExprR | ''
+```
+
+**Step 3: `Term`.** The productions `Term ::= Term '*' Factor | Term '/' Factor | Factor` have α1 = `'*' Factor`, α2 = `'/' Factor`, and β = `Factor`, giving
+
+```
+Term  ::= Factor TermR
+TermR ::= '*' Factor TermR | '/' Factor TermR | ''
+```
+
+**Step 4: Separate the shared prefix of `Decl`.** For an LL(1) parser to stay deterministic, a single lookahead token must be enough to decide which production to use, so two alternatives of the same non-terminal should not begin with the same symbols. In Model 2, `Decl ::= Kw id '=' Expr | Kw id ':' Type '=' Expr` both start with `Kw id`, so the parser could not tell them apart from the first tokens alone. Pulling the shared prefix into a new tail non-terminal removes that overlap:
+
+```
+Decl     ::= Kw id DeclTail
+DeclTail ::= '=' Expr | ':' Type '=' Expr
+```
+
+Applying these transformations to Model 2 produces Model 3 below.
 
 ```
 Program  ::= Stmt ProgramR
@@ -163,13 +227,29 @@ Literal  ::= intlit
            | 'false'
 ```
 
-This grammar is **unambiguous**, has **no left recursion**, and is ready to be processed by an LL(1) parser.
+After these transformations the grammar has no left recursion, and no two alternatives of any non-terminal begin with the same token, so a single token of lookahead is enough to choose a production at every step. Model 3 is therefore **unambiguous**, has **no left recursion**, and is ready to be processed by an **LL(1) parser**.
+
+---
+
+## Comparison of Approaches and Justification
+
+The final grammar is not the only way to describe this language. Three construction strategies were considered, and they differ mainly in which kind of parser, from the taxonomy seen in the course, can process them.
+
+The first strategy is to keep the ambiguous Model 1 and let the parser resolve precedence instead of the grammar. In the parser taxonomy, this matches a bottom-up operator-precedence parser, which assigns a precedence to each operator directly rather than encoding it in the productions. This keeps the grammar compact, but the precedence information then lives in the parser and not in the grammar, so the grammar on its own no longer fully describes the language.
+
+The second strategy is to stop at Model 2, which is unambiguous but still left-recursive. Left recursion is not a problem for the bottom-up LR parsers shown in the taxonomy, since they read the input from left to right and build the tree from the leaves up, so a left-recursive rule can be handled directly. The drawback is that a left-recursive grammar cannot be parsed by a top-down parser such as LL(1): the parser would expand the same non-terminal again without consuming any input, which is exactly the reason the course gives for why left recursion must be removed before a grammar can be LL(1).
+
+The third strategy, and the one adopted, is Model 3, which is unambiguous and free of left recursion, the two conditions the course states a grammar must satisfy to be processed by an LL(1) parser. LL(1) is the top-down, single-lookahead, no-backtracking parser that the course focuses on, so a grammar in this form can be parsed by the simplest deterministic technique covered, with no backtracking.
+
+Model 3 was chosen because this project demonstrates exactly that LL(1) top-down parsing, and it validates the grammar with the Princeton LL(1) parser tool and with NLTK's chart parser, both of which need a grammar that is free of ambiguity and free of left recursion. Models 1 and 2 would each require a different and more complex bottom-up parser, which is outside the scope of what the project sets out to show.
+
+One point is worth stating explicitly. Removing left recursion makes the additive and multiplicative rules right-recursive, so the parse tree groups repeated operators toward the right rather than toward the left. As the course points out, the transformed grammar still generates exactly the same language, so for the purpose of recognizing and validating strings, which is the goal of this project, the two forms accept the same set of inputs and the LL(1) form is the correct choice.
 
 ---
 
 ## Implementation + Testing
 
-Once the three models were complete, the final model was implemented using the **Natural Language Toolkit (NLTK)**, which provides a suite of libraries for symbolic and statistical natural language processing tasks, including parsing (Aho et al., 2006).
+Once the three models were complete, the final model was implemented using the **Natural Language Toolkit (NLTK)**, which provides a suite of libraries for symbolic and statistical natural language processing tasks, including parsing [4].
 
 The grammar terminals use real TypeScript tokens: keywords like `const` and `let`, identifiers like `x` or `result`, numeric literals, string literals, type keywords, and punctuation symbols. Input sentences are tokenized by splitting on whitespace, so each token must be separated by a space. The NLTK `ChartParser` is used, which implements a general chart parsing algorithm compatible with context-free grammars (Earley-based). It is important to note that while NLTK does not expose a strict LL(1) parser implementation, the grammar itself was designed and cleaned to be LL(1) compatible, free of ambiguity and left recursion as verified using the Princeton University LL(1) parser tool. The `ChartParser` correctly validates membership in the language defined by our grammar.
 
@@ -227,13 +307,13 @@ LL(1) parser failure for `const id assign intlit plus semi` (equivalent to `cons
 
 ## Complexity
 
-The time complexity of parsing with a context-free grammar using a chart parser is **O(n³)**, where n is the length of the input token sequence. This is the standard complexity for general CFG parsing algorithms such as CYK and Earley (Grune & Jacobs, 2008).
+The time complexity of parsing with a context-free grammar using a chart parser is **O(n³)**, where n is the length of the input token sequence. This is the standard complexity for general CFG parsing algorithms such as CYK and Earley [3].
 
 For our test program, which parses N sentences of average length n, the overall complexity is approximately **O(N · n³)**, assuming the grammar remains constant across all parsing operations.
 
 **Before** eliminating ambiguity and left recursion, the grammar (Model 1) is still context-free (Type 2 in the Chomsky Hierarchy), but it is not suitable for deterministic LL(1) parsing. An ambiguous grammar can produce multiple parse trees for the same string, making deterministic parsing impossible without additional disambiguation rules.
 
-**After** eliminating ambiguity and left recursion (Model 3), the grammar remains context-free (Type 2) but is now suitable for LL(1) parsing, which is deterministic and does not require backtracking. The Chomsky Hierarchy level does not change, both grammars are context-free but the cleaned grammar enables efficient O(n³) deterministic parsing instead of potentially exponential backtracking (Grune & Jacobs, 2008).
+**After** eliminating ambiguity and left recursion (Model 3), the grammar remains context-free (Type 2) but is now suitable for LL(1) parsing, which is deterministic and does not require backtracking. The Chomsky Hierarchy level does not change, both grammars are context-free but the cleaned grammar enables efficient O(n³) deterministic parsing instead of potentially exponential backtracking [3].
 
 ---
 
@@ -253,8 +333,10 @@ Our final grammar (Model 3) is classified within the **Chomsky Hierarchy as a Co
 
 ## References
 
-Aho, A. V., Lam, M. S., Sethi, R., & Ullman, J. D. (2006). *Compilers: Principles, Techniques, and Tools* (2nd ed.). Addison-Wesley.
+[1] A. V. Aho, M. S. Lam, R. Sethi, and J. D. Ullman, *Compilers: Principles, Techniques, and Tools*, 2nd ed. Boston, MA, USA: Addison-Wesley, 2006.
 
-Grune, D., & Jacobs, C. J. H. (2008). *Parsing Techniques: A Practical Guide* (2nd ed.). Springer. https://doi.org/10.1007/978-0-387-68954-8
+[2] J. E. Hopcroft, R. Motwani, and J. D. Ullman, *Introduction to Automata Theory, Languages, and Computation*, 3rd ed. Boston, MA, USA: Addison-Wesley, 2006.
 
-Hopcroft, J. E., Motwani, R., & Ullman, J. D. (2006). *Introduction to Automata Theory, Languages, and Computation* (3rd ed.). Addison-Wesley.
+[3] D. Grune and C. J. H. Jacobs, *Parsing Techniques: A Practical Guide*, 2nd ed. New York, NY, USA: Springer, 2008.
+
+[4] S. Bird, E. Klein, and E. Loper, *Natural Language Processing with Python*. Sebastopol, CA, USA: O'Reilly Media, 2009.
